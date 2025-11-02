@@ -21,7 +21,7 @@ from chess_mcp import (
     GetRatingInput,
     ResponseFormat,
     Difficulty
-)i
+)
 
 
 async def test_new_game():

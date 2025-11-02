@@ -7,6 +7,7 @@ with alpha-beta pruning.
 """
 
 import json
+import random
 from enum import Enum
 from typing import Optional, List, Dict, Any
 import chess
@@ -33,6 +34,7 @@ DEFAULT_AI_DEPTH = 3  # Search depth for AI (3-4 is reasonable)
 
 # Difficulty to search depth mapping
 DIFFICULTY_DEPTH_MAP = {
+    "very_easy": 1, # Searches 1 move ahead - very fast, very weak (~300 ELO)
     "easy": 2,      # Searches 2 moves ahead - faster, weaker
     "medium": 3,    # Searches 3 moves ahead - balanced (default)
     "hard": 4,      # Searches 4 moves ahead - slower, stronger
@@ -44,9 +46,10 @@ ELO_K_FACTOR = 32  # Rating change multiplier (32 is standard for developing pla
 
 # AI difficulty to ELO rating mapping
 AI_RATING_MAP = {
-    "easy": 800,    # Conservative beginner level
-    "medium": 1200, # Average club player
-    "hard": 1600,   # Strong club player
+    "very_easy": 300, # Complete beginner level
+    "easy": 800,      # Conservative beginner level
+    "medium": 1200,   # Average club player
+    "hard": 1600,     # Strong club player
 }
 
 
@@ -58,6 +61,7 @@ class ResponseFormat(str, Enum):
 
 class Difficulty(str, Enum):
     """AI difficulty levels for chess opponent."""
+    VERY_EASY = "very_easy"
     EASY = "easy"
     MEDIUM = "medium"
     HARD = "hard"
@@ -87,7 +91,7 @@ class NewGameInput(BaseModel):
     )
     difficulty: Difficulty = Field(
         default=Difficulty.MEDIUM,
-        description="AI opponent difficulty: 'easy' (depth 2), 'medium' (depth 3), or 'hard' (depth 4)"
+        description="AI opponent difficulty: 'very_easy' (depth 1, ~300 ELO), 'easy' (depth 2, ~800 ELO), 'medium' (depth 3, ~1200 ELO), or 'hard' (depth 4, ~1600 ELO)"
     )
     response_format: ResponseFormat = Field(
         default=ResponseFormat.MARKDOWN,
@@ -456,17 +460,23 @@ def minimax(board: chess.Board, depth: int, alpha: float, beta: float, maximizin
         return min_eval, best_move
 
 
-def get_best_move(board: chess.Board, depth: int = DEFAULT_AI_DEPTH) -> chess.Move:
+def get_best_move(board: chess.Board, depth: int = DEFAULT_AI_DEPTH, difficulty: str = "medium") -> chess.Move:
     """
     Get the best move for black using minimax algorithm.
-    
+
     Args:
         board: Current board position (black to move)
         depth: Search depth for the algorithm
-    
+        difficulty: Difficulty level (affects randomness in very_easy mode)
+
     Returns:
         Best move for black
     """
+    # For very_easy difficulty, make random moves 40% of the time to simulate beginner mistakes
+    if difficulty == "very_easy" and random.random() < 0.4:
+        legal_moves = list(board.legal_moves)
+        return random.choice(legal_moves)
+
     _, best_move = minimax(board, depth, float('-inf'), float('inf'), True)
     return best_move if best_move else list(board.legal_moves)[0]
 
@@ -706,10 +716,11 @@ async def chess_new_game(params: NewGameInput) -> str:
         params (NewGameInput): Input parameters containing:
             - game_id (Optional[str]): Unique identifier for the game (default: "default")
             - player_id (Optional[str]): Player identifier for ELO tracking (default: "default")
-            - difficulty (Difficulty): AI opponent strength - 'easy', 'medium', or 'hard' (default: "medium")
-                - easy: AI searches 2 moves ahead (faster, makes more mistakes)
-                - medium: AI searches 3 moves ahead (balanced speed and strength)
-                - hard: AI searches 4 moves ahead (slower, plays strong positional chess)
+            - difficulty (Difficulty): AI opponent strength - 'very_easy', 'easy', 'medium', or 'hard' (default: "medium")
+                - very_easy: AI searches 1 move ahead with 40% random moves (~300 ELO, complete beginner)
+                - easy: AI searches 2 moves ahead (~800 ELO, beginner level)
+                - medium: AI searches 3 moves ahead (~1200 ELO, balanced speed and strength)
+                - hard: AI searches 4 moves ahead (~1600 ELO, strong positional chess)
             - response_format (ResponseFormat): Output format - 'markdown' or 'json'
 
     Returns:
@@ -909,8 +920,17 @@ async def chess_submit_move(params: SubmitMoveInput) -> str:
         # AI evaluates position and decides whether to resign or move
         # Get difficulty level for this game (default to MEDIUM if not set)
         game_difficulty = game_metadata.get(params.game_id, {}).get("difficulty", Difficulty.MEDIUM)
-        ai_depth = DIFFICULTY_DEPTH_MAP[game_difficulty.value if isinstance(game_difficulty, Difficulty) else game_difficulty]
-        eval_score, black_move = minimax(board, ai_depth, float('-inf'), float('inf'), True)
+        difficulty_value = game_difficulty.value if isinstance(game_difficulty, Difficulty) else game_difficulty
+        ai_depth = DIFFICULTY_DEPTH_MAP[difficulty_value]
+
+        # For very_easy difficulty, make random moves 40% of the time to simulate beginner mistakes
+        if difficulty_value == "very_easy" and random.random() < 0.4:
+            legal_moves = list(board.legal_moves)
+            black_move = random.choice(legal_moves)
+            # Still evaluate position for resign logic
+            eval_score, _ = minimax(board, ai_depth, float('-inf'), float('inf'), True)
+        else:
+            eval_score, black_move = minimax(board, ai_depth, float('-inf'), float('inf'), True)
 
         # AI auto-resign logic: if position is hopeless (down more than 1500 centipawns), resign
         AI_RESIGN_THRESHOLD = -1500  # Roughly 1.5 pawns or a minor piece down with bad position
